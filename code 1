@@ -1,0 +1,65 @@
+#define BLYNK_TEMPLATE_ID   "TMPL6oOC0yUk4"
+#define BLYNK_TEMPLATE_NAME "ProjectFinal"
+#define BLYNK_AUTH_TOKEN    "dhSbEkuKlVUnsmLLU8GLPZRqZXgKz2KR"
+
+#include <BlynkSimpleEsp32.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include "DHT.h"
+
+// WiFi
+char ssid[] = "Thuy Duong";
+char pass[] = "0977061097";
+
+// DHT11
+#define DHTPIN 23
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+unsigned long lastSend = 0;
+const long sendInterval = 2000; // 2 giây
+
+void setup() {
+  Serial.begin(115200);
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  dht.begin();
+  Wire.begin(22,21);
+  lcd.begin(16,2);
+  lcd.backlight();
+
+  lcd.setCursor(0,0);
+  lcd.print("Incubator Ready");
+  delay(1500);
+  lcd.clear();
+}
+
+void loop() {
+  Blynk.run();
+
+  unsigned long currentMillis = millis();
+  if(currentMillis - lastSend >= sendInterval){
+    lastSend = currentMillis;
+
+    float temp = dht.readTemperature();
+    float hum  = dht.readHumidity();
+
+    if(isnan(temp) || isnan(hum)){
+      lcd.setCursor(0,0); lcd.print("Sensor Error   ");
+      lcd.setCursor(0,1); lcd.print("Check Device   ");
+      return;
+    }
+
+    lcd.setCursor(0,0);
+    lcd.print("T:"); lcd.print(temp,1); lcd.print("C H:");
+    lcd.print(hum,0); lcd.print("%");
+    lcd.setCursor(0,1);
+    lcd.print("Mode: AUTO   ");
+
+    Blynk.virtualWrite(V0,temp);
+    Blynk.virtualWrite(V1,hum);
+  }
+}
