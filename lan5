@@ -1,0 +1,232 @@
+#define BLYNK_TEMPLATE_ID   "TMPL6oOC0yUk4"
+#define BLYNK_TEMPLATE_NAME "ProjectFinal"
+#define BLYNK_AUTH_TOKEN    "dhSbEkuKlVUnsmLLU8GLPZRqZXgKz2KR"
+
+#include <BlynkSimpleEsp32.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include "DHT.h"
+
+// WiFi
+char ssid[] = "Thuy Duong";
+char pass[] = "0977061097";
+
+// DHT11
+#define DHTPIN 23
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// LCD
+LiquidCrystal_I2C lcd(0x27,16,2);
+
+// Relay pins
+#define HEATER_PIN      15
+#define FAN_COOL_PIN    5
+#define FAN_VENT_PIN    18
+#define HUMIDIFIER_PIN  19
+
+// Nút nhấn vật lý
+#define BTN_MODE        13
+#define BTN_HEATER      12
+#define BTN_HUMIDIFIER  14
+#define BTN_FAN_VENT    27
+#define BTN_FAN_COOL    26
+
+// Ngưỡng Auto
+float TempLow = 37.0;
+float TempHigh = 39.0;
+float HumLow  = 55.0;
+float HumHigh = 60.0;
+
+// Mode: true=AUTO, false=MANUAL
+bool autoMode = true;
+
+// Blynk Virtual Pins
+#define VP_TEMP_LOW  V7
+#define VP_TEMP_HIGH V8
+#define VP_HUM_LOW   V9
+#define VP_HUM_HIGH  V10
+#define VP_MODE      V2
+#define VP_HEATER    V3
+#define VP_FAN_COOL  V4
+#define VP_FAN_VENT  V5
+#define VP_HUMIDIFIER V6
+unsigned long lastDisplaySwitch = 0;
+bool showThreshold = false; // true: hiển thị ngưỡng, false: hiển thị giá trị thực
+
+unsigned long lastSend = 0;
+const long sendInterval = 2000;
+
+// --- Setup ---
+void setup() {
+  Serial.begin(115200);
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  dht.begin();
+  Wire.begin(22,21);
+  lcd.begin(16,2);
+  lcd.backlight();
+
+  pinMode(HEATER_PIN, OUTPUT);
+  pinMode(FAN_COOL_PIN, OUTPUT);
+  pinMode(FAN_VENT_PIN, OUTPUT);
+  pinMode(HUMIDIFIER_PIN, OUTPUT);
+
+  pinMode(BTN_MODE, INPUT_PULLUP);
+  pinMode(BTN_HEATER, INPUT_PULLUP);
+  pinMode(BTN_HUMIDIFIER, INPUT_PULLUP);
+  pinMode(BTN_FAN_VENT, INPUT_PULLUP);
+  pinMode(BTN_FAN_COOL, INPUT_PULLUP);
+
+  lcd.setCursor(0,0);
+  lcd.print("Incubator Ready");
+  delay(1500);
+  lcd.clear();
+}
+
+// --- Nhận ngưỡng từ Blynk ---
+BLYNK_WRITE(V7){ TempLow  = param.asFloat(); }
+BLYNK_WRITE(V8){ TempHigh = param.asFloat(); }
+BLYNK_WRITE(V9){ HumLow   = param.asFloat(); }
+BLYNK_WRITE(V10){ HumHigh  = param.asFloat(); }
+BLYNK_CONNECTED() {
+  // Khi ESP32 kết nối lại Blynk (ví dụ sau RS), gửi giá trị mặc định lên cloud
+  Blynk.virtualWrite(V7, TempLow);
+  Blynk.virtualWrite(V8, TempHigh);
+  Blynk.virtualWrite(V9, HumLow);
+  Blynk.virtualWrite(V10, HumHigh);
+}
+// --- Nhận Mode từ Blynk ---
+BLYNK_WRITE(V2){
+  autoMode = (param.asInt()==0); // 0=Auto,1=Manual
+}
+
+// --- Nhận relay từ Blynk Manual ---
+BLYNK_WRITE(V3){ if(!autoMode) digitalWrite(HEATER_PIN,param.asInt()); }
+BLYNK_WRITE(V4){ if(!autoMode) digitalWrite(FAN_COOL_PIN,param.asInt()); }
+BLYNK_WRITE(V5){ if(!autoMode) digitalWrite(FAN_VENT_PIN,param.asInt()); }
+BLYNK_WRITE(V6){ if(!autoMode) digitalWrite(HUMIDIFIER_PIN,param.asInt()); }
+
+// --- Auto logic ---
+void updateAutoMode(float temp, float hum) {
+  if (autoMode) {
+    // ---- Điều khiển theo nhiệt độ ----
+    if (temp < TempLow) {
+      digitalWrite(HEATER_PIN, HIGH);      // Bật đèn sưởi
+      digitalWrite(FAN_COOL_PIN, LOW);     // Tắt quạt tản nhiệt
+    } 
+    else if (temp > TempHigh) {
+      digitalWrite(HEATER_PIN, LOW);       // Tắt đèn sưởi
+      digitalWrite(FAN_COOL_PIN, HIGH);    // Bật quạt tản nhiệt
+    } 
+    else {
+      digitalWrite(HEATER_PIN, LOW);       // Nhiệt độ bình thường → tắt cả 2
+      digitalWrite(FAN_COOL_PIN, LOW);
+    }
+    // ---- Điều khiển theo độ ẩm ----
+    if (hum < HumLow) {
+      digitalWrite(HUMIDIFIER_PIN, HIGH);
+      digitalWrite(FAN_VENT_PIN, LOW);  // Bật máy phun sương
+    } 
+    else if (hum > HumHigh) {
+      digitalWrite(HUMIDIFIER_PIN, LOW);
+      digitalWrite(FAN_VENT_PIN, HIGH);   // Tắt máy phun sương
+    }
+    else {
+      digitalWrite(HUMIDIFIER_PIN, LOW);       // Nhiệt độ bình thường → tắt cả 2
+      digitalWrite(FAN_VENT_PIN, LOW);
+    }
+  }
+}
+
+// --- Đọc nút nhấn vật lý Manual ---
+void readPhysicalButtons(){
+  if(!autoMode){
+    if(digitalRead(BTN_HEATER)==LOW)      digitalWrite(HEATER_PIN, !digitalRead(HEATER_PIN));
+    if(digitalRead(BTN_HUMIDIFIER)==LOW)  digitalWrite(HUMIDIFIER_PIN, !digitalRead(HUMIDIFIER_PIN));
+    if(digitalRead(BTN_FAN_VENT)==LOW)    digitalWrite(FAN_VENT_PIN, !digitalRead(FAN_VENT_PIN));
+    if(digitalRead(BTN_FAN_COOL)==LOW)    digitalWrite(FAN_COOL_PIN, !digitalRead(FAN_COOL_PIN));
+    delay(200); // debounce đơn giản
+  }
+  // Nút chuyển Mode
+  static bool lastBtnMode = HIGH;
+  bool btnState = digitalRead(BTN_MODE);
+  if(lastBtnMode==HIGH && btnState==LOW){
+    autoMode = !autoMode;
+    Blynk.virtualWrite(V2, autoMode?0:1);
+  }
+  lastBtnMode = btnState;
+}
+
+// --- LCD hiển thị ---
+
+
+void displayLCD(float temp, float hum) {
+  unsigned long now = millis();
+
+  // Cứ 10 giây thì đảo giữa hiển thị ngưỡng và giá trị thực
+  if (now - lastDisplaySwitch >= 10000) { // 10s
+    lastDisplaySwitch = now;
+    showThreshold = !showThreshold;
+    lcd.clear();
+  }
+
+  if (autoMode && showThreshold) {
+    // 🔸 Hiển thị ngưỡng (chỉ khi autoMode bật)
+    lcd.setCursor(0, 0);
+    lcd.print("Tg:");
+    lcd.print(TempLow, 1);
+    lcd.print("-");
+    lcd.print(TempHigh, 1);
+    lcd.print("C");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Hg:");
+    lcd.print(HumLow, 0);
+    lcd.print("-");
+    lcd.print(HumHigh, 0);
+    lcd.print("%");
+  } else {
+    // 🔹 Hiển thị giá trị thực tế
+    lcd.setCursor(0, 0);
+    lcd.print("T:");
+    lcd.print(temp, 1);
+    lcd.print("C H:");
+    lcd.print(hum, 0);
+    lcd.print("%");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Mode: ");
+    lcd.print(autoMode ? "AUTO  " : "MANUAL");
+  }
+}
+
+
+void loop(){
+  Blynk.run();
+  readPhysicalButtons();
+
+  unsigned long currentMillis = millis();
+  if(currentMillis - lastSend >= sendInterval){
+    lastSend = currentMillis;
+
+    float temp = dht.readTemperature();
+    float hum  = dht.readHumidity();
+
+    if(isnan(temp) || isnan(hum)){
+      lcd.setCursor(0,0); lcd.print("Sensor Error   ");
+      lcd.setCursor(0,1); lcd.print("Check Device   ");
+      return;
+    }
+
+    updateAutoMode(temp, hum);
+    displayLCD(temp, hum);
+
+    Blynk.virtualWrite(V0,temp);
+    Blynk.virtualWrite(V1,hum);
+    Blynk.virtualWrite(V3,digitalRead(HEATER_PIN));
+    Blynk.virtualWrite(V4,digitalRead(FAN_COOL_PIN));
+    Blynk.virtualWrite(V5,digitalRead(FAN_VENT_PIN));
+    Blynk.virtualWrite(V6,digitalRead(HUMIDIFIER_PIN));
+  }
+}
